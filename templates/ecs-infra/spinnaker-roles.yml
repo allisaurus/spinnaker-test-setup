@@ -1,0 +1,146 @@
+# NOT SUITABLE FOR PRODUCTION USE
+# For development and testing purposes only
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Setup AWS IAM roles for Spinnaker
+
+Resources:
+
+  SpinnakerDevInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SpinnakerDevInstanceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+        # Store Spinnaker state like pipeline definitions in S3
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        # Enable Docker registry triggers
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+  SpinnakerDevInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+      - !Ref SpinnakerDevInstanceRole
+      InstanceProfileName: SpinnakerDevInstanceRole
+
+  SpinnakerDevInstancePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      Roles:
+        - !Ref SpinnakerDevInstanceRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Resource: !GetAtt SpinnakerManagedRole.Arn
+          - Action:
+            - "ec2:DescribeRegions"
+            - "ec2:DescribeAvailabilityZones"
+            Effect: Allow
+            Resource: "*"
+      PolicyName: SpinnakerDevInstanceAssumeManagedRole
+
+  SpinnakerManagedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SpinnakerManaged
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt SpinnakerDevInstanceRole.Arn
+              Service:
+              # Re-use the Spinnaker-managed role as the ECS task execution role
+              - ecs-tasks.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+        # Enable describing the account and doing ECS deployments
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonECS_FullAccess
+        # Re-use the Spinnaker-managed role as the ECS task execution role
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  SpinnakerManagedPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      Roles:
+        - !Ref SpinnakerManagedRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Re-use the Spinnaker-managed role as the ECS task execution role
+          - Action: iam:PassRole
+            Effect: Allow
+            Resource:
+              - !GetAtt SpinnakerManagedRole.Arn
+            Condition:
+              StringLike:
+                "iam:PassedToService":
+                  - ecs-tasks.amazonaws.com
+      PolicyName: SpinnakerPassRole
+
+  TaskExecutionSecretsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      Roles:
+        # Re-use the Spinnaker-managed role as the ECS task execution role
+        - !Ref SpinnakerManagedRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - "kms:Decrypt"
+              - "secretsmanager:GetSecretValue"
+              - "ssm:GetParameters"
+            Effect: Allow
+            Resource: '*'
+      PolicyName: SpinnakerSecretsAccess
+
+  ECSContainerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref 'ECSContainerInstanceRole']
+      InstanceProfileName: SpinnakerECSContainerInstances
+
+  ECSContainerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SpinnakerECSContainerInstances
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ec2.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - 'ecs:CreateCluster'
+              - 'ecs:DeregisterContainerInstance'
+              - 'ecs:DiscoverPollEndpoint'
+              - 'ecs:Poll'
+              - 'ecs:RegisterContainerInstance'
+              - 'ecs:StartTelemetrySession'
+              - 'ecs:Submit*'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+              - 'ecr:GetAuthorizationToken'
+              - 'ecr:BatchGetImage'
+              - 'ecr:GetDownloadUrlForLayer'
+            Resource: '*'
